@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.8.0;
 
-interface IEulerSwapPeriphery {
+interface IAaveLoopSwapPeriphery {
     /// @notice Swap `amountIn` of `tokenIn` for `tokenOut`, with at least `amountOutMin` received.
     /// Output tokens are sent to `receiver`. The swap will fail after `deadline` (unless `deadline` is 0).
     /// IMPORTANT: `eulerSwap` must be a trusted contract, for example created by a trusted factory.

@@ -3,7 +3,7 @@ pragma solidity ^0.8.27;
 
 import {Math} from "openzeppelin-contracts/utils/math/Math.sol";
 
-import {IEulerSwap} from "../interfaces/IEulerSwap.sol";
+import {IAaveLoopSwap} from "../interfaces/IAaveLoopSwap.sol";
 
 library CurveLib {
     error Overflow();
@@ -11,7 +11,7 @@ library CurveLib {
 
     /// @notice Returns true if the specified reserve amounts would be acceptable, false otherwise.
     /// Acceptable points are on, or above and to-the-right of the swapping curve.
-    function verify(IEulerSwap.Params memory p, uint256 newReserve0, uint256 newReserve1)
+    function verify(IAaveLoopSwap.Params memory p, uint256 newReserve0, uint256 newReserve1)
         internal
         pure
         returns (bool)

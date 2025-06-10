@@ -12,9 +12,6 @@ fs_permissions = [{ access = "read-write", path = "./"}]
 mainnet = "${MAINNET_RPC_URL}"
 base = "${BASE_RPC_URL}"
 
-[etherscan]
-mainnet = { key = "${ETHERSCAN_MAINNET_API_KEY}" }
-base = { key = "${ETHERSCAN_BASE_API_KEY}" }
 
 [doc]
 out = "foundry-docs/"

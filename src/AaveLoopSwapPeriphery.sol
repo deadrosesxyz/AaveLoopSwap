@@ -3,17 +3,17 @@ pragma solidity ^0.8.27;
 
 import {SafeERC20, IERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 
-import {IEulerSwapPeriphery} from "./interfaces/IEulerSwapPeriphery.sol";
-import {IEulerSwap} from "./interfaces/IEulerSwap.sol";
+import {IAaveLoopSwapPeriphery} from "./interfaces/IAaveLoopSwapPeriphery.sol";
+import {IAaveLoopSwap} from "./interfaces/IAaveLoopSwap.sol";
 
-contract EulerSwapPeriphery is IEulerSwapPeriphery {
+contract AaveLoopSwapPeriphery is IAaveLoopSwapPeriphery {
     using SafeERC20 for IERC20;
 
     error AmountOutLessThanMin();
     error AmountInMoreThanMax();
     error DeadlineExpired();
 
-    /// @inheritdoc IEulerSwapPeriphery
+    /// @inheritdoc IAaveLoopSwapPeriphery
     function swapExactIn(
         address eulerSwap,
         address tokenIn,
@@ -25,14 +25,14 @@ contract EulerSwapPeriphery is IEulerSwapPeriphery {
     ) external {
         require(deadline == 0 || deadline >= block.timestamp, DeadlineExpired());
 
-        uint256 amountOut = IEulerSwap(eulerSwap).computeQuote(tokenIn, tokenOut, amountIn, true);
+        uint256 amountOut = IAaveLoopSwap(eulerSwap).computeQuote(tokenIn, tokenOut, amountIn, true);
 
         require(amountOut >= amountOutMin, AmountOutLessThanMin());
 
-        swap(IEulerSwap(eulerSwap), tokenIn, tokenOut, amountIn, amountOut, receiver);
+        swap(IAaveLoopSwap(eulerSwap), tokenIn, tokenOut, amountIn, amountOut, receiver);
     }
 
-    /// @inheritdoc IEulerSwapPeriphery
+    /// @inheritdoc IAaveLoopSwapPeriphery
     function swapExactOut(
         address eulerSwap,
         address tokenIn,
@@ -44,34 +44,34 @@ contract EulerSwapPeriphery is IEulerSwapPeriphery {
     ) external {
         require(deadline == 0 || deadline >= block.timestamp, DeadlineExpired());
 
-        uint256 amountIn = IEulerSwap(eulerSwap).computeQuote(tokenIn, tokenOut, amountOut, false);
+        uint256 amountIn = IAaveLoopSwap(eulerSwap).computeQuote(tokenIn, tokenOut, amountOut, false);
 
         require(amountIn <= amountInMax, AmountInMoreThanMax());
 
-        swap(IEulerSwap(eulerSwap), tokenIn, tokenOut, amountIn, amountOut, receiver);
+        swap(IAaveLoopSwap(eulerSwap), tokenIn, tokenOut, amountIn, amountOut, receiver);
     }
 
-    /// @inheritdoc IEulerSwapPeriphery
+    /// @inheritdoc IAaveLoopSwapPeriphery
     function quoteExactInput(address eulerSwap, address tokenIn, address tokenOut, uint256 amountIn)
         external
         view
         returns (uint256)
     {
-        return IEulerSwap(eulerSwap).computeQuote(tokenIn, tokenOut, amountIn, true);
+        return IAaveLoopSwap(eulerSwap).computeQuote(tokenIn, tokenOut, amountIn, true);
     }
 
-    /// @inheritdoc IEulerSwapPeriphery
+    /// @inheritdoc IAaveLoopSwapPeriphery
     function quoteExactOutput(address eulerSwap, address tokenIn, address tokenOut, uint256 amountOut)
         external
         view
         returns (uint256)
     {
-        return IEulerSwap(eulerSwap).computeQuote(tokenIn, tokenOut, amountOut, false);
+        return IAaveLoopSwap(eulerSwap).computeQuote(tokenIn, tokenOut, amountOut, false);
     }
 
-    /// @inheritdoc IEulerSwapPeriphery
+    /// @inheritdoc IAaveLoopSwapPeriphery
     function getLimits(address eulerSwap, address tokenIn, address tokenOut) external view returns (uint256, uint256) {
-        return IEulerSwap(eulerSwap).getLimits(tokenIn, tokenOut);
+        return IAaveLoopSwap(eulerSwap).getLimits(tokenIn, tokenOut);
     }
 
     /// @dev Internal function to execute a token swap through EulerSwap
@@ -82,7 +82,7 @@ contract EulerSwapPeriphery is IEulerSwapPeriphery {
     /// @param amountOut The amount of output tokens to receive
     /// @param receiver The address that should receive the swap output
     function swap(
-        IEulerSwap eulerSwap,
+        IAaveLoopSwap eulerSwap,
         address tokenIn,
         address tokenOut,
         uint256 amountIn,

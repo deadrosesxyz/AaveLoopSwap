@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.8.0;
 
-interface IEulerSwap {
+interface IAaveLoopSwap {
     /// @dev Immutable pool parameters. Passed to the instance via proxy trailing data.
     struct Params {
         // Entities
-        address vault0;
-        address vault1;
-        address eulerAccount;
+        address debtToken0;
+        address debtToken1;
+        address aaveAccount;
         // Curve
         uint112 equilibriumReserve0;
         uint112 equilibriumReserve1;

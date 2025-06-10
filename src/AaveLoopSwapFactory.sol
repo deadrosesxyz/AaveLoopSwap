@@ -3,35 +3,36 @@ pragma solidity ^0.8.27;
 
 import {EnumerableSet} from "openzeppelin-contracts/utils/structs/EnumerableSet.sol";
 
-import {IEulerSwapFactory, IEulerSwap} from "./interfaces/IEulerSwapFactory.sol";
-import {EVCUtil} from "ethereum-vault-connector/utils/EVCUtil.sol";
+import {IAaveLoopSwapFactory, IAaveLoopSwap} from "./interfaces/IAaveLoopSwapFactory.sol";
 import {GenericFactory} from "evk/GenericFactory/GenericFactory.sol";
 
-import {EulerSwap} from "./EulerSwap.sol";
+import {AaveLoopSwap} from "./AaveLoopSwap.sol";
 import {ProtocolFee} from "./utils/ProtocolFee.sol";
 import {MetaProxyDeployer} from "./utils/MetaProxyDeployer.sol";
 
-/// @title EulerSwapFactory contract
+/// @title AaveLoopSwapFactory contract
 /// @custom:security-contact security@euler.xyz
 /// @author Euler Labs (https://www.eulerlabs.com/)
-contract EulerSwapFactory is IEulerSwapFactory, EVCUtil, ProtocolFee {
+contract AaveLoopSwapFactory is IAaveLoopSwapFactory, ProtocolFee {
     using EnumerableSet for EnumerableSet.AddressSet;
 
     /// @dev Vaults must be deployed by this factory
     address public immutable evkFactory;
-    /// @dev The EulerSwap code instance that will be proxied to
-    address public immutable eulerSwapImpl;
+    /// @dev The AaveLoopSwap code instance that will be proxied to
+    address public immutable AaveLoopSwapImpl;
+
+    address public immutable aave;
 
     /// @dev Mapping from euler account to pool, if installed
-    mapping(address eulerAccount => address) internal installedPools;
+    mapping(address aaveAccount => address) internal installedPools;
     /// @dev Set of all pool addresses
     EnumerableSet.AddressSet internal allPools;
     /// @dev Mapping from sorted pair of underlyings to set of pools
     mapping(address asset0 => mapping(address asset1 => EnumerableSet.AddressSet)) internal poolMap;
 
-    event PoolDeployed(address indexed asset0, address indexed asset1, address indexed eulerAccount, address pool);
-    event PoolConfig(address indexed pool, IEulerSwap.Params params, IEulerSwap.InitialState initialState);
-    event PoolUninstalled(address indexed asset0, address indexed asset1, address indexed eulerAccount, address pool);
+    event PoolDeployed(address indexed asset0, address indexed asset1, address indexed aaveAccount, address pool);
+    event PoolConfig(address indexed pool, IAaveLoopSwap.Params params, IAaveLoopSwap.InitialState initialState);
+    event PoolUninstalled(address indexed asset0, address indexed asset1, address indexed aaveAccount, address pool);
 
     error InvalidQuery();
     error Unauthorized();
@@ -42,53 +43,51 @@ contract EulerSwapFactory is IEulerSwapFactory, EVCUtil, ProtocolFee {
     error InvalidProtocolFee();
 
     constructor(
-        address evc,
+        address _aave,
         address evkFactory_,
-        address eulerSwapImpl_,
+        address AaveLoopSwapImpl_,
         address feeOwner_,
         address feeRecipientSetter_
-    ) EVCUtil(evc) ProtocolFee(feeOwner_, feeRecipientSetter_) {
+    ) ProtocolFee(feeOwner_, feeRecipientSetter_) {
+        aave = _aave;
         evkFactory = evkFactory_;
-        eulerSwapImpl = eulerSwapImpl_;
+        AaveLoopSwapImpl = AaveLoopSwapImpl_;
     }
 
-    /// @inheritdoc IEulerSwapFactory
-    function deployPool(IEulerSwap.Params memory params, IEulerSwap.InitialState memory initialState, bytes32 salt)
+    /// @inheritdoc IAaveLoopSwapFactory
+    function deployPool(IAaveLoopSwap.Params memory params, IAaveLoopSwap.InitialState memory initialState, bytes32 salt)
         external
         returns (address)
     {
-        require(_msgSender() == params.eulerAccount, Unauthorized());
-        require(
-            GenericFactory(evkFactory).isProxy(params.vault0) && GenericFactory(evkFactory).isProxy(params.vault1),
-            InvalidVaultImplementation()
-        );
+        // require(_msg.sender == params.aaveAccount, Unauthorized());
+
         require(
             params.protocolFee == protocolFee && params.protocolFeeRecipient == protocolFeeRecipient,
             InvalidProtocolFee()
         );
 
-        uninstall(params.eulerAccount);
+        // uninstall(params.aaveAccount);
 
-        EulerSwap pool = EulerSwap(MetaProxyDeployer.deployMetaProxy(eulerSwapImpl, abi.encode(params), salt));
+        AaveLoopSwap pool = AaveLoopSwap(MetaProxyDeployer.deployMetaProxy(AaveLoopSwapImpl, abi.encode(params), salt));
 
-        updateEulerAccountState(params.eulerAccount, address(pool));
+        // updateaaveAccountState(params.aaveAccount, address(pool));
 
         pool.activate(initialState);
 
         (address asset0, address asset1) = pool.getAssets();
-        emit PoolDeployed(asset0, asset1, params.eulerAccount, address(pool));
+        emit PoolDeployed(asset0, asset1, params.aaveAccount, address(pool));
         emit PoolConfig(address(pool), params, initialState);
 
         return address(pool);
     }
 
-    /// @inheritdoc IEulerSwapFactory
-    function uninstallPool() external {
-        uninstall(_msgSender());
-    }
+    // /// @inheritdoc IAaveLoopSwapFactory
+    // function uninstallPool() external {
+    //     uninstall(msg.sender);
+    // }
 
-    /// @inheritdoc IEulerSwapFactory
-    function computePoolAddress(IEulerSwap.Params memory poolParams, bytes32 salt) external view returns (address) {
+    /// @inheritdoc IAaveLoopSwapFactory
+    function computePoolAddress(IAaveLoopSwap.Params memory poolParams, bytes32 salt) external view returns (address) {
         return address(
             uint160(
                 uint256(
@@ -97,7 +96,7 @@ contract EulerSwapFactory is IEulerSwapFactory, EVCUtil, ProtocolFee {
                             bytes1(0xff),
                             address(this),
                             salt,
-                            keccak256(MetaProxyDeployer.creationCodeMetaProxy(eulerSwapImpl, abi.encode(poolParams)))
+                            keccak256(MetaProxyDeployer.creationCodeMetaProxy(AaveLoopSwapImpl, abi.encode(poolParams)))
                         )
                     )
                 )
@@ -105,32 +104,32 @@ contract EulerSwapFactory is IEulerSwapFactory, EVCUtil, ProtocolFee {
         );
     }
 
-    /// @inheritdoc IEulerSwapFactory
-    function poolByEulerAccount(address eulerAccount) external view returns (address) {
-        return installedPools[eulerAccount];
-    }
+    // /// @inheritdoc IAaveLoopSwapFactory
+    // function poolByaaveAccount(address aaveAccount) external view returns (address) {
+    //     return installedPools[aaveAccount];
+    // }
 
-    /// @inheritdoc IEulerSwapFactory
+    /// @inheritdoc IAaveLoopSwapFactory
     function poolsLength() external view returns (uint256) {
         return allPools.length();
     }
 
-    /// @inheritdoc IEulerSwapFactory
+    /// @inheritdoc IAaveLoopSwapFactory
     function poolsSlice(uint256 start, uint256 end) external view returns (address[] memory) {
         return getSlice(allPools, start, end);
     }
 
-    /// @inheritdoc IEulerSwapFactory
+    /// @inheritdoc IAaveLoopSwapFactory
     function pools() external view returns (address[] memory) {
         return allPools.values();
     }
 
-    /// @inheritdoc IEulerSwapFactory
+    /// @inheritdoc IAaveLoopSwapFactory
     function poolsByPairLength(address asset0, address asset1) external view returns (uint256) {
         return poolMap[asset0][asset1].length();
     }
 
-    /// @inheritdoc IEulerSwapFactory
+    /// @inheritdoc IAaveLoopSwapFactory
     function poolsByPairSlice(address asset0, address asset1, uint256 start, uint256 end)
         external
         view
@@ -139,46 +138,46 @@ contract EulerSwapFactory is IEulerSwapFactory, EVCUtil, ProtocolFee {
         return getSlice(poolMap[asset0][asset1], start, end);
     }
 
-    /// @inheritdoc IEulerSwapFactory
+    /// @inheritdoc IAaveLoopSwapFactory
     function poolsByPair(address asset0, address asset1) external view returns (address[] memory) {
         return poolMap[asset0][asset1].values();
     }
 
-    /// @notice Validates operator authorization for euler account and update the relevant EulerAccountState.
-    /// @param eulerAccount The address of the euler account.
+    /// @notice Validates operator authorization for euler account and update the relevant aaveAccountState.
+    /// @param aaveAccount The address of the euler account.
     /// @param newOperator The address of the new pool.
-    function updateEulerAccountState(address eulerAccount, address newOperator) internal {
-        require(evc.isAccountOperatorAuthorized(eulerAccount, newOperator), OperatorNotInstalled());
+    // function updateaaveAccountState(address aaveAccount, address newOperator) internal {
+    //     require(evc.isAccountOperatorAuthorized(aaveAccount, newOperator), OperatorNotInstalled());
 
-        (address asset0, address asset1) = IEulerSwap(newOperator).getAssets();
+    //     (address asset0, address asset1) = IAaveLoopSwap(newOperator).getAssets();
 
-        installedPools[eulerAccount] = newOperator;
+    //     installedPools[aaveAccount] = newOperator;
 
-        allPools.add(newOperator);
-        poolMap[asset0][asset1].add(newOperator);
-    }
+    //     allPools.add(newOperator);
+    //     poolMap[asset0][asset1].add(newOperator);
+    // }
 
     /// @notice Uninstalls the pool associated with the given Euler account
     /// @dev This function removes the pool from the factory's tracking and emits a PoolUninstalled event
     /// @dev The function checks if the operator is still installed and reverts if it is
     /// @dev If no pool exists for the account, the function returns without any action
-    /// @param eulerAccount The address of the Euler account whose pool should be uninstalled
-    function uninstall(address eulerAccount) internal {
-        address pool = installedPools[eulerAccount];
+    /// @param aaveAccount The address of the Euler account whose pool should be uninstalled
+    // function uninstall(address aaveAccount) internal {
+    //     address pool = installedPools[aaveAccount];
 
-        if (pool == address(0)) return;
+    //     if (pool == address(0)) return;
 
-        require(!evc.isAccountOperatorAuthorized(eulerAccount, pool), OldOperatorStillInstalled());
+    //     require(!evc.isAccountOperatorAuthorized(aaveAccount, pool), OldOperatorStillInstalled());
 
-        (address asset0, address asset1) = IEulerSwap(pool).getAssets();
+    //     (address asset0, address asset1) = IAaveLoopSwap(pool).getAssets();
 
-        allPools.remove(pool);
-        poolMap[asset0][asset1].remove(pool);
+    //     allPools.remove(pool);
+    //     poolMap[asset0][asset1].remove(pool);
 
-        delete installedPools[eulerAccount];
+    //     delete installedPools[aaveAccount];
 
-        emit PoolUninstalled(asset0, asset1, eulerAccount, pool);
-    }
+    //     emit PoolUninstalled(asset0, asset1, aaveAccount, pool);
+    // }
 
     /// @notice Returns a slice of an array of addresses
     /// @dev Creates a new memory array containing elements from start to end index
@@ -204,7 +203,7 @@ contract EulerSwapFactory is IEulerSwapFactory, EVCUtil, ProtocolFee {
         return slice;
     }
 
-    function _eulerSwapImpl() internal view override returns (address) {
-        return eulerSwapImpl;
+    function _AaveLoopSwapImpl() internal view returns (address) {
+        return AaveLoopSwapImpl;
     }
 }

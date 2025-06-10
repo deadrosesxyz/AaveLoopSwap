@@ -1,37 +1,32 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.27;
 
-import {IEVC} from "evc/interfaces/IEthereumVaultConnector.sol";
-import {IEVault} from "evk/EVault/IEVault.sol";
-import {IEulerSwap} from "../interfaces/IEulerSwap.sol";
+import {IAaveLoopSwap} from "../interfaces/IAaveLoopSwap.sol";
 import {CtxLib} from "./CtxLib.sol";
 import {CurveLib} from "./CurveLib.sol";
+import {IAToken} from "../interfaces/IAToken.sol";
+
 
 library QuoteLib {
     error UnsupportedPair();
     error OperatorNotInstalled();
     error SwapLimitExceeded();
 
-    /// @dev Computes the quote for a swap by applying fees and validating state conditions
-    /// @param evc EVC instance
-    /// @param p The EulerSwap params
-    /// @param asset0IsInput Swap direction
-    /// @param amount The amount to quote (input amount if exactIn=true, output amount if exactIn=false)
-    /// @param exactIn True if quoting for exact input amount, false if quoting for exact output amount
     /// @return The quoted amount (output amount if exactIn=true, input amount if exactIn=false)
     /// @dev Validates:
     ///      - EulerSwap operator is installed
     ///      - Token pair is supported
     ///      - Sufficient reserves exist
     ///      - Sufficient cash is available
-    function computeQuote(address evc, IEulerSwap.Params memory p, bool asset0IsInput, uint256 amount, bool exactIn)
+    function computeQuote(address aave, IAaveLoopSwap.Params memory p, bool asset0IsInput, uint256 amount, bool exactIn)
         internal
         view
         returns (uint256)
     {
         if (amount == 0) return 0;
 
-        require(IEVC(evc).isAccountOperatorAuthorized(p.eulerAccount, address(this)), OperatorNotInstalled());
+        // here maybe add that the hook is approved to borrow?
+        
         require(amount <= type(uint112).max, SwapLimitExceeded());
 
         uint256 fee = p.fee;
@@ -63,91 +58,51 @@ library QuoteLib {
     ///      2. Available reserves in the EulerSwap for the output token
     ///      3. Available cash and borrow caps for the output token
     ///      4. Account balances in the respective vaults
-    /// @param p The EulerSwap params
-    /// @param asset0IsInput Boolean indicating whether asset0 (true) or asset1 (false) is the input token
-    /// @return uint256 Maximum amount of input token that can be deposited
-    /// @return uint256 Maximum amount of output token that can be withdrawn
-    function calcLimits(IEulerSwap.Params memory p, bool asset0IsInput) internal view returns (uint256, uint256) {
+    function calcLimits(IAaveLoopSwap.Params memory p, bool asset0IsInput) internal view returns (uint256, uint256) {
         CtxLib.Storage storage s = CtxLib.getStorage();
 
         uint256 inLimit = type(uint112).max;
         uint256 outLimit = type(uint112).max;
 
-        address eulerAccount = p.eulerAccount;
-        (IEVault vault0, IEVault vault1) = (IEVault(p.vault0), IEVault(p.vault1));
+        address aaveAccount = p.aaveAccount;
+        (IAToken debtToken0, IAToken debtToken1) = (IAToken(p.debtToken0), IAToken(p.debtToken1));
+        
         // Supply caps on input
         {
-            IEVault vault = (asset0IsInput ? vault0 : vault1);
-            uint256 maxDeposit = vault.debtOf(eulerAccount) + vault.maxDeposit(eulerAccount);
+            IAToken token = (asset0IsInput ? debtToken0 : debtToken1);
+            uint256 maxDeposit = IAToken(token).balanceOf(aaveAccount); // max deposit is such that we repay the outstanding debt.
             if (maxDeposit < inLimit) inLimit = maxDeposit;
         }
 
         // Remaining reserves of output
-        {
+        {   
+            // technically, the outLimit should never possibly be reached?
+            // exactAmountOut swaps for close to max reserves might fail.
             uint112 reserveLimit = asset0IsInput ? s.reserve1 : s.reserve0;
             if (reserveLimit < outLimit) outLimit = reserveLimit;
         }
 
-        // Remaining cash and borrow caps in output
-        {
-            IEVault vault = (asset0IsInput ? vault1 : vault0);
-
-            uint256 cash = vault.cash();
-            if (cash < outLimit) outLimit = cash;
-
-            (, uint16 borrowCap) = vault.caps();
-            uint256 maxWithdraw = decodeCap(uint256(borrowCap));
-            maxWithdraw = vault.totalBorrows() > maxWithdraw ? 0 : maxWithdraw - vault.totalBorrows();
-            if (maxWithdraw < outLimit) {
-                maxWithdraw += vault.convertToAssets(vault.balanceOf(eulerAccount));
-                if (maxWithdraw < outLimit) outLimit = maxWithdraw;
-            }
-        }
 
         return (inLimit, outLimit);
     }
 
-    /// @notice Decodes a compact-format cap value to its actual numerical value
-    /// @dev The cap uses a compact-format where:
-    ///      - If amountCap == 0, there's no cap (returns max uint256)
-    ///      - Otherwise, the lower 6 bits represent the exponent (10^exp)
-    ///      - The upper bits (>> 6) represent the mantissa
-    ///      - The formula is: (10^exponent * mantissa) / 100
-    /// @param amountCap The compact-format cap value to decode
-    /// @return The actual numerical cap value (type(uint256).max if uncapped)
-    /// @custom:security Uses unchecked math for gas optimization as calculations cannot overflow:
-    ///                  maximum possible value 10^(2^6-1) * (2^10-1) ≈ 1.023e+66 < 2^256
-    function decodeCap(uint256 amountCap) internal pure returns (uint256) {
-        if (amountCap == 0) return type(uint256).max;
-
-        unchecked {
-            // Cannot overflow because this is less than 2**256:
-            //   10**(2**6 - 1) * (2**10 - 1) = 1.023e+66
-            return 10 ** (amountCap & 63) * (amountCap >> 6) / 100;
-        }
-    }
-
     /// @notice Verifies that the given tokens are supported by the EulerSwap pool and determines swap direction
     /// @dev Returns a boolean indicating whether the input token is asset0 (true) or asset1 (false)
-    /// @param p The EulerSwap params
-    /// @param tokenIn The input token address for the swap
-    /// @param tokenOut The output token address for the swap
-    /// @return asset0IsInput True if tokenIn is asset0 and tokenOut is asset1, false if reversed
     /// @custom:error UnsupportedPair Thrown if the token pair is not supported by the EulerSwap pool
-    function checkTokens(IEulerSwap.Params memory p, address tokenIn, address tokenOut)
+    function checkTokens(IAaveLoopSwap.Params memory p, address tokenIn, address tokenOut)
         internal
         view
         returns (bool asset0IsInput)
     {
-        address asset0 = IEVault(p.vault0).asset();
-        address asset1 = IEVault(p.vault1).asset();
+        address asset0 = IAToken(p.debtToken0).UNDERLYING_ASSET_ADDRESS();
+        address asset1 = IAToken(p.debtToken1).UNDERLYING_ASSET_ADDRESS();
 
         if (tokenIn == asset0 && tokenOut == asset1) asset0IsInput = true;
         else if (tokenIn == asset1 && tokenOut == asset0) asset0IsInput = false;
         else revert UnsupportedPair();
     }
 
-    function findCurvePoint(IEulerSwap.Params memory p, uint256 amount, bool exactIn, bool asset0IsInput)
+    function findCurvePoint(IAaveLoopSwap.Params memory p, uint256 amount, bool exactIn, bool asset0IsInput)
         internal
         view
         returns (uint256 output)

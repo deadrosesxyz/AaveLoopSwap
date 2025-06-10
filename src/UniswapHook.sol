@@ -14,31 +14,33 @@ import {
 
 import {IEVault} from "evk/EVault/IEVault.sol";
 
-import {IEulerSwap} from "./interfaces/IEulerSwap.sol";
+import {IAaveLoopSwap} from "./interfaces/IAaveLoopSwap.sol";
 import "./Events.sol";
 import {CtxLib} from "./libraries/CtxLib.sol";
 import {QuoteLib} from "./libraries/QuoteLib.sol";
 import {CurveLib} from "./libraries/CurveLib.sol";
 import {FundsLib} from "./libraries/FundsLib.sol";
+import {IAToken} from "./interfaces/IAToken.sol";
+
 
 contract UniswapHook is BaseHook {
     using SafeCast for uint256;
 
-    address private immutable evc;
+    address internal immutable aave;
 
     PoolKey internal _poolKey;
 
     error LockedHook();
 
-    constructor(address evc_, address _poolManager) BaseHook(IPoolManager(_poolManager)) {
-        evc = evc_;
+    constructor(address _poolManager, address _aave) BaseHook(IPoolManager(_poolManager)) {
+        aave = _aave;
     }
 
-    function activateHook(IEulerSwap.Params memory p) internal {
+    function activateHook(IAaveLoopSwap.Params memory p) internal {
         Hooks.validateHookPermissions(this, getHookPermissions());
 
-        address asset0Addr = IEVault(p.vault0).asset();
-        address asset1Addr = IEVault(p.vault1).asset();
+        address asset0Addr = IAToken(p.debtToken0).UNDERLYING_ASSET_ADDRESS();
+        address asset1Addr = IAToken(p.debtToken1).UNDERLYING_ASSET_ADDRESS();
 
         // convert fee in WAD to pips. 0.003e18 / 1e12 = 3000 = 0.30%
         uint24 fee = uint24(p.fee / 1e12);
@@ -86,7 +88,7 @@ contract UniswapHook is BaseHook {
         nonReentrantHook
         returns (bytes4, BeforeSwapDelta, uint24)
     {
-        IEulerSwap.Params memory p = CtxLib.getParams();
+        IAaveLoopSwap.Params memory p = CtxLib.getParams();
 
         uint256 amountInWithoutFee;
         uint256 amountOut;
@@ -97,10 +99,10 @@ contract UniswapHook is BaseHook {
             bool isExactInput = params.amountSpecified < 0;
             if (isExactInput) {
                 amountIn = uint256(-params.amountSpecified);
-                amountOut = QuoteLib.computeQuote(evc, p, params.zeroForOne, amountIn, true);
+                amountOut = QuoteLib.computeQuote(aave, p, params.zeroForOne, amountIn, true);
             } else {
                 amountOut = uint256(params.amountSpecified);
-                amountIn = QuoteLib.computeQuote(evc, p, params.zeroForOne, amountOut, false);
+                amountIn = QuoteLib.computeQuote(aave, p, params.zeroForOne, amountOut, false);
             }
 
             // return the delta to the PoolManager, so it can process the accounting
@@ -110,6 +112,8 @@ contract UniswapHook is BaseHook {
             // exact output:
             //   specifiedDelta = negative, to offset the output token paid by the hook (positive delta)
             //   unspecifiedDelta = positive, to offset the input token taken by the hook (negative delta)
+
+            
             returnDelta = isExactInput
                 ? toBeforeSwapDelta(amountIn.toInt128(), -(amountOut.toInt128()))
                 : toBeforeSwapDelta(-(amountOut.toInt128()), amountIn.toInt128());
@@ -117,12 +121,12 @@ contract UniswapHook is BaseHook {
             // take the input token, from the PoolManager to the Euler vault
             // the debt will be paid by the swapper via the swap router
             poolManager.take(params.zeroForOne ? key.currency0 : key.currency1, address(this), amountIn);
-            amountInWithoutFee = FundsLib.depositAssets(evc, p, params.zeroForOne ? p.vault0 : p.vault1);
+            amountInWithoutFee = FundsLib.depositAssets(aave, p, params.zeroForOne ? p.debtToken0 : p.debtToken1);
 
             // pay the output token, to the PoolManager from an Euler vault
             // the credit will be forwarded to the swap router, which then forwards it to the swapper
             poolManager.sync(params.zeroForOne ? key.currency1 : key.currency0);
-            FundsLib.withdrawAssets(evc, p, params.zeroForOne ? p.vault1 : p.vault0, amountOut, address(poolManager));
+            FundsLib.withdrawAssets(aave, p, params.zeroForOne ? p.debtToken1 : p.debtToken0, amountOut, address(poolManager));
             poolManager.settle();
         }
 

@@ -4,11 +4,12 @@ pragma solidity ^0.8.27;
 import {SafeERC20, IERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import {IAllowanceTransfer} from "permit2/src/interfaces/IAllowanceTransfer.sol";
 
-import {IEVC} from "evc/interfaces/IEthereumVaultConnector.sol";
-import {IEVault, IBorrowing, IERC4626, IRiskManager} from "evk/EVault/IEVault.sol";
 import {Errors as EVKErrors} from "evk/EVault/shared/Errors.sol";
 
-import {IEulerSwap} from "../interfaces/IEulerSwap.sol";
+import {IAaveLoopSwap} from "../interfaces/IAaveLoopSwap.sol";
+import {IAToken} from "../interfaces/IAToken.sol";
+import {IAavePool} from "../interfaces/IAavePool.sol";
+
 
 library FundsLib {
     using SafeERC20 for IERC20;
@@ -16,59 +17,35 @@ library FundsLib {
     error DepositFailure(bytes reason);
 
     /// @notice Approves tokens for a given vault, supporting both standard approvals and permit2
-    /// @param vault The address of the vault to approve the token for
-    function approveVault(address vault) internal {
-        address asset = IEVault(vault).asset();
-        address permit2 = IEVault(vault).permit2Address();
-        if (permit2 == address(0)) {
-            IERC20(asset).forceApprove(vault, type(uint256).max);
-        } else {
-            IERC20(asset).forceApprove(permit2, type(uint256).max);
-            IAllowanceTransfer(permit2).approve(asset, vault, type(uint160).max, type(uint48).max);
-        }
+
+    function approveAsset(address variableDebtToken, address aave) internal {
+        address asset = IAToken(variableDebtToken).UNDERLYING_ASSET_ADDRESS();
+
+        IERC20(asset).forceApprove(aave, type(uint256).max);
     }
 
     /// @notice Withdraws assets from a vault, first using available balance and then borrowing if needed
-    /// @param evc EVC instance
-    /// @param p EulerSwap parameters
-    /// @param vault The address of the vault to withdraw from
-    /// @param amount The total amount of assets to withdraw
-    /// @param to The address that will receive the withdrawn assets
+
     /// @dev This function first checks if there's an existing balance in the vault.
     /// @dev If there is, it withdraws the minimum of the requested amount and available balance.
     /// @dev If more assets are needed after withdrawal, it enables the controller and borrows the remaining amount.
-    function withdrawAssets(address evc, IEulerSwap.Params memory p, address vault, uint256 amount, address to)
+    function withdrawAssets(address aave, IAaveLoopSwap.Params memory p, address debtToken, uint256 amount, address to)
         internal
-    {
-        uint256 balance;
-        {
-            uint256 shares = IEVault(vault).balanceOf(p.eulerAccount);
-            balance = shares == 0 ? 0 : IEVault(vault).convertToAssets(shares);
-        }
+    {      
 
-        if (balance > 0) {
-            uint256 avail = amount < balance ? amount : balance;
-            IEVC(evc).call(vault, p.eulerAccount, 0, abi.encodeCall(IERC4626.withdraw, (avail, to, p.eulerAccount)));
-            amount -= avail;
-        }
+        address asset = IAToken(debtToken).UNDERLYING_ASSET_ADDRESS();
 
-        if (amount > 0) {
-            IEVC(evc).enableController(p.eulerAccount, vault);
-            IEVC(evc).call(vault, p.eulerAccount, 0, abi.encodeCall(IBorrowing.borrow, (amount, to)));
-        }
+        IAavePool(aave).borrow(asset, amount, 2, 0, p.aaveAccount);
+        IERC20(asset).safeTransfer(to, amount);
     }
 
     /// @notice Deposits assets into a vault and automatically repays any outstanding debt
-    /// @param evc EVC instance
-    /// @param p EulerSwap parameters
-    /// @param vault The address of the vault to deposit into
-    /// @return The amount of assets successfully deposited
     /// @dev This function attempts to deposit assets into the specified vault.
     /// @dev If the deposit fails with E_ZeroShares error, it safely returns 0 (this happens with very small amounts).
     /// @dev After successful deposit, if the user has any outstanding controller-enabled debt, it attempts to repay it.
     /// @dev If all debt is repaid, the controller is automatically disabled to reduce gas costs in future operations.
-    function depositAssets(address evc, IEulerSwap.Params memory p, address vault) internal returns (uint256) {
-        address asset = IEVault(vault).asset();
+    function depositAssets(address aave, IAaveLoopSwap.Params memory p, address debtToken) internal returns (uint256) {
+        address asset = IAToken(debtToken).UNDERLYING_ASSET_ADDRESS();
 
         uint256 amount = IERC20(asset).balanceOf(address(this));
         if (amount == 0) return 0;
@@ -85,31 +62,29 @@ library FundsLib {
             }
         }
 
-        uint256 deposited;
+        IAavePool(aave).repay(asset, amount, 2, p.aaveAccount); // this is not actually euler account but no worries
 
-        if (IEVC(evc).isControllerEnabled(p.eulerAccount, vault)) {
-            uint256 debt = IEVault(vault).debtOf(p.eulerAccount);
-            uint256 repaid = IEVault(vault).repay(amount > debt ? debt : amount, p.eulerAccount);
+        return amount - feeAmount;
+    }
 
-            amount -= repaid;
-            debt -= repaid;
-            deposited += repaid;
+    function flashLoanAssets(address aave, IAaveLoopSwap.Params memory p, uint256 amount0Out, uint256 amount1Out, address to, bytes memory data) internal { 
 
-            if (debt == 0) {
-                IEVC(evc).call(vault, p.eulerAccount, 0, abi.encodeCall(IRiskManager.disableController, ()));
-            }
-        }
+        address[] memory assets = new address[](2);
+        assets[0] = IAToken(p.debtToken0).UNDERLYING_ASSET_ADDRESS();
+        assets[1] = IAToken(p.debtToken1).UNDERLYING_ASSET_ADDRESS();
 
-        if (amount > 0) {
-            try IEVault(vault).deposit(amount, p.eulerAccount) {}
-            catch (bytes memory reason) {
-                require(bytes4(reason) == EVKErrors.E_ZeroShares.selector, DepositFailure(reason));
-                amount = 0;
-            }
+        uint256[] memory amounts = new uint256[](2);
+        amounts[0] = amount0Out;
+        amounts[1] = amount1Out;
 
-            deposited += amount;
-        }
+        uint256[] memory interestRateModes = new uint256[](2);
+        interestRateModes[0] = amount0Out == 0 ? 0 : 2;
+        interestRateModes[1] = amount1Out == 0 ? 0 : 2;
 
-        return deposited > feeAmount ? deposited - feeAmount : 0;
+        bytes memory flashloanData = abi.encode(amount0Out, amount1Out, to, data);
+        IAavePool(aave).flashLoan(address(this), assets, amounts, interestRateModes, p.aaveAccount, flashloanData, 0);
+
+        
+
     }
 }

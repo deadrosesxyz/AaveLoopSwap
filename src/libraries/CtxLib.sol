@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.27;
 
-import {IEulerSwap} from "../interfaces/IEulerSwap.sol";
+import {IAaveLoopSwap} from "../interfaces/IAaveLoopSwap.sol";
 
 library CtxLib {
     struct Storage {
@@ -24,10 +24,10 @@ library CtxLib {
     /// @dev Unpacks encoded Params from trailing calldata. Loosely based on
     /// the implementation from EIP-3448 (except length is hard-coded).
     /// 384 is the size of the Params struct after ABI encoding.
-    function getParams() internal pure returns (IEulerSwap.Params memory p) {
+    function getParams() internal pure returns (IAaveLoopSwap.Params memory p) {
         require(msg.data.length >= 384, InsufficientCalldata());
         unchecked {
-            return abi.decode(msg.data[msg.data.length - 384:], (IEulerSwap.Params));
+            return abi.decode(msg.data[msg.data.length - 384:], (IAaveLoopSwap.Params));
         }
     }
 }

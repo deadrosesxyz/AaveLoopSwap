@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.27;
 
-import {IEulerSwapCallee} from "./interfaces/IEulerSwapCallee.sol";
+import {IAaveLoopSwapCallee} from "./interfaces/IAaveLoopSwapCallee.sol";
 
-import {EVCUtil} from "evc/utils/EVCUtil.sol";
-import {IEVC} from "evc/interfaces/IEthereumVaultConnector.sol";
-import {IEVault} from "evk/EVault/IEVault.sol";
-
-import {IEulerSwap} from "./interfaces/IEulerSwap.sol";
+import {IAaveLoopSwap} from "./interfaces/IAaveLoopSwap.sol";
 import {UniswapHook} from "./UniswapHook.sol";
 import "./Events.sol";
 import {CtxLib} from "./libraries/CtxLib.sol";
@@ -15,8 +11,17 @@ import {FundsLib} from "./libraries/FundsLib.sol";
 import {CurveLib} from "./libraries/CurveLib.sol";
 import {QuoteLib} from "./libraries/QuoteLib.sol";
 
-contract EulerSwap is IEulerSwap, EVCUtil, UniswapHook {
-    bytes32 public constant curve = bytes32("EulerSwap v1");
+import {IAToken} from "./interfaces/IAToken.sol";
+import {IAavePool} from "./interfaces/IAavePool.sol";
+/*
+    NOTE: THE FOLLOWING CODE HAS BEEN MADE TO WORK SPECIFICALLY WITH USDC/USDT.
+    IT'S NOT SUITABLE FOR ANY OTHER TOKEN PAIRS. THE CODE ASSUMES THE TWO TOKENS HAVE THE SAME PRICE
+    AND SAME DECIMAL PRECISION
+
+*/
+
+contract AaveLoopSwap is IAaveLoopSwap, UniswapHook {
+    bytes32 public constant curve = bytes32("AaveLoopSwap v1");
 
     error Locked();
     error AlreadyActivated();
@@ -24,7 +29,7 @@ contract EulerSwap is IEulerSwap, EVCUtil, UniswapHook {
     error AmountTooBig();
     error AssetsOutOfOrderOrEqual();
 
-    constructor(address evc_, address poolManager_) EVCUtil(evc_) UniswapHook(evc_, poolManager_) {
+    constructor(address _aave, address poolManager_) UniswapHook(poolManager_, _aave) {
         CtxLib.Storage storage s = CtxLib.getStorage();
 
         s.status = 2; // can only be used via delegatecall proxy
@@ -46,7 +51,7 @@ contract EulerSwap is IEulerSwap, EVCUtil, UniswapHook {
         _;
     }
 
-    /// @inheritdoc IEulerSwap
+    /// @inheritdoc IAaveLoopSwap
     function activate(InitialState calldata initialState) external {
         CtxLib.Storage storage s = CtxLib.getStorage();
         Params memory p = CtxLib.getParams();
@@ -62,8 +67,8 @@ contract EulerSwap is IEulerSwap, EVCUtil, UniswapHook {
         require(p.concentrationX <= 1e18 && p.concentrationY <= 1e18, BadParam());
 
         {
-            address asset0Addr = IEVault(p.vault0).asset();
-            address asset1Addr = IEVault(p.vault1).asset();
+            address asset0Addr = IAToken(p.debtToken0).UNDERLYING_ASSET_ADDRESS();
+            address asset1Addr = IAToken(p.debtToken1).UNDERLYING_ASSET_ADDRESS();
             require(asset0Addr < asset1Addr, AssetsOutOfOrderOrEqual());
             emit EulerSwapActivated(asset0Addr, asset1Addr);
         }
@@ -79,38 +84,35 @@ contract EulerSwap is IEulerSwap, EVCUtil, UniswapHook {
 
         // Configure external contracts
 
-        FundsLib.approveVault(p.vault0);
-        FundsLib.approveVault(p.vault1);
-
-        IEVC(evc).enableCollateral(p.eulerAccount, p.vault0);
-        IEVC(evc).enableCollateral(p.eulerAccount, p.vault1);
+        FundsLib.approveAsset(p.debtToken0, aave);
+        FundsLib.approveAsset(p.debtToken1, aave);
 
         // Uniswap hooks
 
         if (address(poolManager) != address(0)) activateHook(p);
     }
 
-    /// @inheritdoc IEulerSwap
+    /// @inheritdoc IAaveLoopSwap
     function getParams() external pure returns (Params memory) {
         return CtxLib.getParams();
     }
 
-    /// @inheritdoc IEulerSwap
+    /// @inheritdoc IAaveLoopSwap
     function getAssets() external view returns (address asset0, address asset1) {
         Params memory p = CtxLib.getParams();
 
-        asset0 = IEVault(p.vault0).asset();
-        asset1 = IEVault(p.vault1).asset();
+        asset0 = IAToken(p.debtToken0).UNDERLYING_ASSET_ADDRESS();
+        asset1 = IAToken(p.debtToken1).UNDERLYING_ASSET_ADDRESS();
     }
 
-    /// @inheritdoc IEulerSwap
+    /// @inheritdoc IAaveLoopSwap
     function getReserves() external view nonReentrantView returns (uint112, uint112, uint32) {
         CtxLib.Storage storage s = CtxLib.getStorage();
 
         return (s.reserve0, s.reserve1, s.status);
     }
 
-    /// @inheritdoc IEulerSwap
+    /// @inheritdoc IAaveLoopSwap
     function computeQuote(address tokenIn, address tokenOut, uint256 amount, bool exactIn)
         external
         view
@@ -119,44 +121,46 @@ contract EulerSwap is IEulerSwap, EVCUtil, UniswapHook {
     {
         Params memory p = CtxLib.getParams();
 
-        return QuoteLib.computeQuote(address(evc), p, QuoteLib.checkTokens(p, tokenIn, tokenOut), amount, exactIn);
+        return QuoteLib.computeQuote(address(aave), p, QuoteLib.checkTokens(p, tokenIn, tokenOut), amount, exactIn);
     }
 
-    /// @inheritdoc IEulerSwap
+    /// @inheritdoc IAaveLoopSwap
     function getLimits(address tokenIn, address tokenOut) external view nonReentrantView returns (uint256, uint256) {
         Params memory p = CtxLib.getParams();
-
-        if (!evc.isAccountOperatorAuthorized(p.eulerAccount, address(this))) return (0, 0);
 
         return QuoteLib.calcLimits(p, QuoteLib.checkTokens(p, tokenIn, tokenOut));
     }
 
-    /// @inheritdoc IEulerSwap
+    /// @inheritdoc IAaveLoopSwap
     function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data)
         external
-        callThroughEVC
         nonReentrant
     {
         require(amount0Out <= type(uint112).max && amount1Out <= type(uint112).max, AmountTooBig());
+        Params memory p = CtxLib.getParams();
+
+        FundsLib.flashLoanAssets(aave, p, amount0Out, amount1Out, to, data);
+    }
+
+    function executeOperation(
+        address[] calldata assets,
+        uint256[] calldata amounts,
+        uint256[] calldata premiums,
+        address initiator,
+        bytes calldata data
+    ) external returns (bool) {
+        require(msg.sender == aave, "mba");
+        require(initiator == address(this), "imt");
 
         CtxLib.Storage storage s = CtxLib.getStorage();
         Params memory p = CtxLib.getParams();
 
-        // Optimistically send tokens
+        (uint256 amount0Out, uint256 amount1Out, address to, bytes memory callbackData) = abi.decode(data, (uint256, uint256, address, bytes));
 
-        if (amount0Out > 0) FundsLib.withdrawAssets(address(evc), p, p.vault0, amount0Out, to);
-        if (amount1Out > 0) FundsLib.withdrawAssets(address(evc), p, p.vault1, amount1Out, to);
+        if (callbackData.length > 0) IAaveLoopSwapCallee(to).aaveLoopSwapCall(address(0), amount0Out, amount1Out, callbackData);
 
-        // Invoke callback
-
-        if (data.length > 0) IEulerSwapCallee(to).eulerSwapCall(_msgSender(), amount0Out, amount1Out, data);
-
-        // Deposit all available funds, adjust received amounts downward to collect fees
-
-        uint256 amount0In = FundsLib.depositAssets(address(evc), p, p.vault0);
-        uint256 amount1In = FundsLib.depositAssets(address(evc), p, p.vault1);
-
-        // Verify curve invariant is satisfied
+        uint256 amount0In = FundsLib.depositAssets(address(aave), p, p.debtToken0);
+        uint256 amount1In = FundsLib.depositAssets(address(aave), p, p.debtToken1);
 
         {
             uint256 newReserve0 = s.reserve0 + amount0In - amount0Out;
@@ -168,6 +172,9 @@ contract EulerSwap is IEulerSwap, EVCUtil, UniswapHook {
             s.reserve1 = uint112(newReserve1);
         }
 
-        emit Swap(_msgSender(), amount0In, amount1In, amount0Out, amount1Out, s.reserve0, s.reserve1, to);
-    }
+        // here event would always have aave pool as first arg
+        emit Swap(msg.sender, amount0In, amount1In, amount0Out, amount1Out, s.reserve0, s.reserve1, to);
+
+        return true;
+    } 
 }

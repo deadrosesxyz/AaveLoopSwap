@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.8.0;
 
-import {IEulerSwap} from "./IEulerSwap.sol";
+import {IAaveLoopSwap} from "./IAaveLoopSwap.sol";
 
-interface IEulerSwapFactory {
+interface IAaveLoopSwapFactory {
     /// @notice Deploy a new EulerSwap pool with the given parameters
     /// @dev The pool address is deterministically generated using CREATE2 with a salt derived from
     ///      the euler account address and provided salt parameter. This allows the pool address to be
@@ -12,7 +12,7 @@ interface IEulerSwapFactory {
     /// @param initialState Initial state of the pool
     /// @param salt Unique value to generate deterministic pool address
     /// @return Address of the newly deployed pool
-    function deployPool(IEulerSwap.Params memory params, IEulerSwap.InitialState memory initialState, bytes32 salt)
+    function deployPool(IAaveLoopSwap.Params memory params, IAaveLoopSwap.InitialState memory initialState, bytes32 salt)
         external
         returns (address);
 
@@ -20,7 +20,7 @@ interface IEulerSwapFactory {
     /// @dev This function removes the pool from the factory's tracking and emits a PoolUninstalled event
     /// @dev The function can only be called by the Euler account that owns the pool
     /// @dev If no pool is installed for the caller, the function returns without any action
-    function uninstallPool() external;
+    // function uninstallPool() external;
 
     /// @notice Compute the address of a new EulerSwap pool with the given parameters
     /// @dev The pool address is deterministically generated using CREATE2 with a salt derived from
@@ -29,7 +29,7 @@ interface IEulerSwapFactory {
     /// @param poolParams Core pool parameters including vaults, account, and fee settings
     /// @param salt Unique value to generate deterministic pool address
     /// @return Address of the newly deployed pool
-    function computePoolAddress(IEulerSwap.Params memory poolParams, bytes32 salt) external view returns (address);
+    function computePoolAddress(IAaveLoopSwap.Params memory poolParams, bytes32 salt) external view returns (address);
 
     /// @notice Returns a slice of all deployed pools
     /// @dev Returns a subset of the pools array from start to end index
@@ -73,7 +73,7 @@ interface IEulerSwapFactory {
     /// @dev Returns the pool address from the EulerAccountState mapping for the given holder
     /// @param who The address of the holder to query
     /// @return The address of the pool associated with the holder
-    function poolByEulerAccount(address who) external view returns (address);
+    // function poolByEulerAccount(address who) external view returns (address);
 
     /// @notice Returns the total number of deployed pools
     /// @dev Returns the length of the allPools array
